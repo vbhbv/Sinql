@@ -1,12 +1,12 @@
 import logging
 import os
 import re
-import requests # ⬅️ مطلوب لحل ModuleNotFoundError
+import requests 
 from telegram import Update
-# 🛑🛑 الاستيراد الدقيق لمنع استدعاء Updater القديم 🛑🛑
-from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.ext.application import Application
-# 🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑
+# 🛑 الاستيراد الآن يتوافق مع البنية القديمة (V13)
+from telegram.ext import (
+    Updater, CommandHandler, MessageHandler, filters, CallbackContext
+) 
 
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
@@ -36,18 +36,18 @@ MAX_TELEGRAM_SIZE_MB = 1950
 executor = ThreadPoolExecutor(max_workers=4) 
 
 # -----------------------------------------------------
-# 📚 الدوال المساعدة والمعالجة (Handlers) - تم وضعها قبل main لحل NameError
+# 📚 الدوال المساعدة والمعالجة (Handlers) - تستخدم CallbackContext
 # -----------------------------------------------------
 
 # 🚀 معالج الأمر /start
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_command(update: Update, context: CallbackContext) -> None:
     """إرسال رسالة ترحيبية عند استخدام الأمر /start."""
     await update.message.reply_text(
         "مرحباً بك! أنا بوت تنزيل فيديوهات فيسبوك السريع.\n"
         "فقط أرسل لي **رابط** فيديو فيسبوك وسأتولى الأمر بسرعة فائقة!"
     )
 
-# ⚙️ وظيفة التحديث الذاتي لـ yt-dlp (لا يتم استدعاؤها في main الآن لضمان الاستقرار)
+# ⚙️ وظيفة التحديث الذاتي لـ yt-dlp 
 def self_update_ytdlp():
     """تجبر yt-dlp على تحديث نفسه عند بدء التشغيل."""
     try:
@@ -109,7 +109,7 @@ async def retry_upload(func: Callable, max_retries: int = 3, delay: int = 5, *ar
     return None
 
 # ⚡️ الوظيفة الأساسية: معالج رابط الفيسبوك
-async def handle_facebook_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_facebook_link(update: Update, context: CallbackContext) -> None:
     """المُعالج الرئيسي: فحص، تنزيل، وإرسال الفيديو."""
     chat_id = update.effective_chat.id
     url = update.message.text.strip()
@@ -143,6 +143,7 @@ async def handle_facebook_link(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     
     async def update_progress_message(text):
+        # استخدام context.bot.edit_message_text (هذه الدالة تعمل في V13)
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=message.message_id, 
@@ -162,6 +163,7 @@ async def handle_facebook_link(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await update_progress_message(text="🔍 جاري فحص حالة الفيديو واستخلاص البيانات الوصفية (Pre-Flight Check)...")
         with YoutubeDL({'quiet': True, 'noprogress': True}) as ydl_meta:
+            # تشغيل في executor لأن ydl_meta.extract_info هي دالة متزامنة
             info = await asyncio.get_event_loop().run_in_executor(
                 executor, lambda: ydl_meta.extract_info(url, download=False)
             )
@@ -315,26 +317,27 @@ async def handle_facebook_link(update: Update, context: ContextTypes.DEFAULT_TYP
 # -----------------------------------------------------
 
 def main() -> None:
-    """تشغيل البوت."""
+    """تشغيل البوت باستخدام بنية Updater القديمة والمستقرة."""
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
         return
-        
-    # البناء الصحيح لـ PTB V20+ (يحل مشكلة Updater و JobQueue)
-    application = Application.builder().token(TOKEN).concurrent_updates(True).build()
+
+    # 🛑 البنية القديمة (V13)
+    updater = Updater(TOKEN) 
+    dispatcher = updater.dispatcher 
 
     # إضافة المعالجات (Handlers)
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r"(facebook\.com|fb\.watch)"), handle_facebook_link))
+    dispatcher.add_handler(CommandHandler("start", start_command))
+    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r"(facebook\.com|fb\.watch)"), handle_facebook_link))
 
     logger.info("Bot is running...")
     
-    # 🛑 تم تعطيل سطر التحديث الذاتي لضمان الاستقرار:
-    # application.job_queue.run_once(lambda context: self_update_ytdlp(), 1) 
+    # يمكننا تجربة تشغيل Job Queue لكنها تحتاج تثبيت job-queue
+    # dispatcher.job_queue.run_once(lambda context: self_update_ytdlp(), 1) 
     
     # تشغيل البوت
-    application.run_polling(poll_interval=1) 
+    updater.start_polling(poll_interval=1) 
+    updater.idle() # لمنع انتهاء تشغيل البوت
 
 if __name__ == "__main__":
     main()
-              
