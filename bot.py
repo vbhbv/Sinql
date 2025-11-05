@@ -3,17 +3,23 @@ import os
 import re
 import requests 
 from telegram import Update
-# 🛑 الاستيراد الآن يتوافق مع البنية القديمة (V13)
-from telegram.ext import (
-    Updater, CommandHandler, MessageHandler, filters, CallbackContext
-) 
-
-from yt_dlp import YoutubeDL
-from yt_dlp.utils import DownloadError, ExtractorError
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Any
 import time
+
+# 🛑🛑🛑 الاستيراد الصحيح لإصدار V13 🛑🛑🛑
+from telegram.ext import (
+    Updater, 
+    CommandHandler, 
+    MessageHandler, 
+    filters, 
+    CallbackContext # استخدام CallbackContext بدلاً من ContextTypes
+) 
+# 🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑
+
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError, ExtractorError
 
 # -----------------------------------------------------
 # ⚙️ الإعدادات والموارد العالمية
@@ -40,14 +46,16 @@ executor = ThreadPoolExecutor(max_workers=4)
 # -----------------------------------------------------
 
 # 🚀 معالج الأمر /start
+# يجب استخدام CallbackContext بدلاً من ContextTypes.DEFAULT_TYPE لـ V13
 async def start_command(update: Update, context: CallbackContext) -> None:
     """إرسال رسالة ترحيبية عند استخدام الأمر /start."""
+    # تأكد من أن جميع الدوال تستخدم await
     await update.message.reply_text(
         "مرحباً بك! أنا بوت تنزيل فيديوهات فيسبوك السريع.\n"
         "فقط أرسل لي **رابط** فيديو فيسبوك وسأتولى الأمر بسرعة فائقة!"
     )
 
-# ⚙️ وظيفة التحديث الذاتي لـ yt-dlp 
+# ⚙️ وظيفة التحديث الذاتي لـ yt-dlp (لا يتم استدعاؤها حالياً)
 def self_update_ytdlp():
     """تجبر yt-dlp على تحديث نفسه عند بدء التشغيل."""
     try:
@@ -86,6 +94,7 @@ def progress_hook_factory(update_func, total_bytes):
                     f"⬇️ {d['downloaded_bytes'] / (1024*1024):.2f}MB / {total_bytes / (1024*1024):.2f}MB"
                 )
                 try:
+                    # يجب أن تكون دالة update_func مُعرّفة كـ async
                     await update_func(text=f"🔥 **جاري التنزيل...**\n{status_text}")
                 except Exception as e:
                     logger.debug(f"Progress update failed: {e}") 
@@ -109,6 +118,7 @@ async def retry_upload(func: Callable, max_retries: int = 3, delay: int = 5, *ar
     return None
 
 # ⚡️ الوظيفة الأساسية: معالج رابط الفيسبوك
+# يجب استخدام CallbackContext بدلاً من ContextTypes.DEFAULT_TYPE لـ V13
 async def handle_facebook_link(update: Update, context: CallbackContext) -> None:
     """المُعالج الرئيسي: فحص، تنزيل، وإرسال الفيديو."""
     chat_id = update.effective_chat.id
@@ -143,7 +153,6 @@ async def handle_facebook_link(update: Update, context: CallbackContext) -> None
     )
     
     async def update_progress_message(text):
-        # استخدام context.bot.edit_message_text (هذه الدالة تعمل في V13)
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=message.message_id, 
@@ -163,7 +172,6 @@ async def handle_facebook_link(update: Update, context: CallbackContext) -> None
     try:
         await update_progress_message(text="🔍 جاري فحص حالة الفيديو واستخلاص البيانات الوصفية (Pre-Flight Check)...")
         with YoutubeDL({'quiet': True, 'noprogress': True}) as ydl_meta:
-            # تشغيل في executor لأن ydl_meta.extract_info هي دالة متزامنة
             info = await asyncio.get_event_loop().run_in_executor(
                 executor, lambda: ydl_meta.extract_info(url, download=False)
             )
@@ -322,7 +330,7 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
         return
 
-    # 🛑 البنية القديمة (V13)
+    # 🛑 البنية القديمة (V13) - التي تحل مشكلة Updater
     updater = Updater(TOKEN) 
     dispatcher = updater.dispatcher 
 
@@ -332,12 +340,10 @@ def main() -> None:
 
     logger.info("Bot is running...")
     
-    # يمكننا تجربة تشغيل Job Queue لكنها تحتاج تثبيت job-queue
-    # dispatcher.job_queue.run_once(lambda context: self_update_ytdlp(), 1) 
-    
     # تشغيل البوت
     updater.start_polling(poll_interval=1) 
     updater.idle() # لمنع انتهاء تشغيل البوت
 
 if __name__ == "__main__":
+    # تشغيل main في بيئة متزامنة
     main()
