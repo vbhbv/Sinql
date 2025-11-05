@@ -1,24 +1,25 @@
 import os
 import yt_dlp
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import asyncio
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+# ===== رسالة البدء =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 بوت تحميل الفيديوهات من فيسبوك 🔥\n\n"
-        "أرسل رابط فيديو أو ريلز من فيسبوك وسأقوم بتحميله لك بجودة عالية 💥"
+        "🔥 مرحباً بك في بوت تحميل الفيديوهات من فيسبوك 🔥\n\n"
+        "أرسل لي أي رابط من فيسبوك وسأحمله لك 💥"
     )
 
-async def download_facebook_video(url: str):
+# ===== دالة التحميل =====
+def download_video(url: str):
     output_path = "video.mp4"
     ydl_opts = {
         "outtmpl": output_path,
-        "format": "best[ext=mp4]/best",
         "quiet": True,
-        "noplaylist": True,
+        "format": "best[ext=mp4]/best"
     }
 
     try:
@@ -29,31 +30,32 @@ async def download_facebook_video(url: str):
         print(f"❌ خطأ أثناء التحميل: {e}")
         return None
 
+# ===== عند استقبال رابط =====
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
+    text = update.message.text.strip()
 
-    if "facebook.com" not in url and "fb.watch" not in url:
-        await update.message.reply_text("⚠️ أرسل رابط فيديو من فيسبوك فقط.")
+    if "facebook.com" not in text and "fb.watch" not in text:
+        await update.message.reply_text("⚠️ أرسل لي رابط فيسبوك فقط.")
         return
 
     await update.message.reply_text("⏳ جاري تحميل الفيديو...")
 
-    video_path = await asyncio.to_thread(download_facebook_video, url)
+    video_path = await asyncio.to_thread(download_video, text)
 
     if video_path and os.path.exists(video_path):
         await update.message.reply_video(video=open(video_path, "rb"), caption="✅ تم التحميل بنجاح!")
         os.remove(video_path)
     else:
-        await update.message.reply_text("❌ لم أستطع تحميل الفيديو، حاول برابط آخر أو تحقق أنه عام.")
+        await update.message.reply_text("❌ لم أستطع تحميل الفيديو. تأكد أن الرابط عام.")
 
+# ===== التشغيل =====
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🚀 البوت يعمل الآن...")
-    asyncio.run(app.bot.delete_webhook(drop_pending_updates=True))
     app.run_polling()
 
 if __name__ == "__main__":
