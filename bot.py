@@ -1,57 +1,65 @@
 import os
-import requests
+import asyncio
+import yt_dlp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# ===== إعداد التوكن =====
+# ============ إعداد التوكن ============
 TOKEN = os.getenv("BOT_TOKEN")  # ضع التوكن في متغير بيئة في Railway
 
-# ===== دالة الترحيب =====
+# ============ رسالة البداية ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 مرحباً بك في بوت تحميل الفيديوهات من فيسبوك 🔥\n\n"
-        "أرسل رابط أي فيديو أو ريلز أو ستوري من فيسبوك، وسأقوم بتحميله لك!"
+        "🔥 بوت تحميل الفيديوهات من فيسبوك 🔥\n\n"
+        "أرسل لي رابط فيديو أو ريلز من فيسبوك وسأقوم بتحميله لك بجودة عالية 💥"
     )
 
-# ===== دالة التحميل =====
-def get_facebook_video_url(url):
-    """
-    تستخدم API خارجي مجاني لاستخراج رابط التحميل.
-    يمكن تغييره لاحقًا إلى أداة خاصة بك.
-    """
-    api_url = "https://fbdownloader.online/api/get.php?url=" + url
+# ============ دالة تحميل الفيديو ============
+async def download_facebook_video(url: str):
+    output_path = "video.mp4"
+    ydl_opts = {
+        "outtmpl": output_path,
+        "format": "best[ext=mp4]/best",
+        "quiet": True,
+        "noplaylist": True,
+    }
+
     try:
-        r = requests.get(api_url)
-        if r.status_code == 200 and "download" in r.text:
-            data = r.json()
-            return data.get("hd", "") or data.get("sd", "")
-        return None
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        return output_path
     except Exception as e:
-        print("Error:", e)
+        print(f"❌ خطأ أثناء التحميل: {e}")
         return None
 
-# ===== عند استلام رابط =====
+# ============ عند استلام رابط ============
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if "facebook.com" in text or "fb.watch" in text:
-        await update.message.reply_text("⏳ جاري معالجة الرابط وتحميل الفيديو...")
-        video_url = get_facebook_video_url(text)
-        if video_url:
-            await update.message.reply_video(video=video_url, caption="✅ تم التحميل بنجاح!")
-        else:
-            await update.message.reply_text("❌ لم أستطع استخراج الفيديو، حاول برابط آخر.")
-    else:
-        await update.message.reply_text("⚠️ أرسل رابط فيديو من فيسبوك فقط.")
+    url = update.message.text.strip()
 
-# ===== تشغيل البوت =====
-def main():
+    if "facebook.com" not in url and "fb.watch" not in url:
+        await update.message.reply_text("⚠️ أرسل لي رابط فيديو من فيسبوك فقط.")
+        return
+
+    await update.message.reply_text("⏳ جاري تحميل الفيديو، انتظر قليلاً...")
+
+    video_path = await asyncio.to_thread(download_facebook_video, url)
+
+    if video_path and os.path.exists(video_path):
+        await update.message.reply_video(video=open(video_path, "rb"), caption="✅ تم التحميل بنجاح!")
+        os.remove(video_path)
+    else:
+        await update.message.reply_text("❌ لم أستطع تحميل الفيديو، حاول برابط آخر أو تحقق أنه عام.")
+
+# ============ تشغيل البوت ============
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🚀 البوت يعمل الآن...")
-    app.run_polling()
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
