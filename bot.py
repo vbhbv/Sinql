@@ -1,6 +1,7 @@
 import os
 import logging
 import shutil
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from PIL import Image
@@ -24,66 +25,66 @@ def تنظيف_المجلد_المؤقت():
 
 تنظيف_المجلد_المؤقت()
 
+# دالة لتنظيف الأسماء من الرموز الممنوعة في نظام الملفات
+def clean_filename(name):
+    # إزالة الرموز التي قد تسبب مشاكل في التسمية مثل / \ : * ? " < > |
+    return re.sub(r'[\/*?:"<>|]', '', name).strip()
+
 # دالة الترحيب /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # تصفير البيانات عند البدء الجديد
+    context.user_data.clear()
     await update.message.reply_text(
         "👋 أهلاً بك في بوت تحويل الملفات المتكامل!\n\n"
         "📸 **لتحويل الصور إلى ملف:** أرسل لي صورة (أو عدة صور دفعة واحدة).\n"
         "📄 **لتحويل المستندات:** أرسل لي ملف PDF لتحويله مباشرة إلى Word."
     )
 
-# دالة تُستدعى بعد توقف إرسال الصور بـ ثانية واحدة لإرسال رسالة واحدة للمستخدم
-async def send_single_menu(context: ContextTypes.DEFAULT_TYPE):
+# دالة تُستدعى بعد توقف إرسال الصور بـ ثانية واحدة لتطلب اسم الملف
+async def ask_for_filename(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
     chat_id = job.chat_id
     
-    # جلب مسارات الصور المخزنة لهذا المستخدم
     user_data = context.application.user_data.get(user_id, {})
     images_count = len(user_data.get('user_images', []))
     
     if images_count == 0:
         return
 
-    keyboard = [
-        [
-            InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
-            InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
-        ],
-        [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    # حفظ حالة المستخدم بأنه الآن مطالب بإدخال الاسم
+    user_data['waiting_for_name'] = True
+
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"📥 تم استلام وحفظ جميع الصور بنجاح! إجمالي الصور الحالية: ({images_count}).\n"
-             f"الرجاء اختيار الصيغة التي تريد تحويل الصور إليها مجتمعة:",
-        reply_markup=reply_markup
+        text=f"📥 تم استلام وحفظ جميع الصور بنجاح! إجمالي الصور: ({images_count}).\n\n"
+             f"✍️ **من فضلك أرسل الآن الاسم الذي تريده للملف النهائي (بدون صيغة):**"
     )
 
 # دالة استقبال ومعالجة الصور
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        photo_file = await update.message.photo[-1].get_file()
         user_id = update.message.from_user.id
         chat_id = update.message.chat_id
         
         if 'user_images' not in context.user_data:
             context.user_data['user_images'] = []
             
+        # إذا أرسل صوراً جديدة، نلغي حالة انتظار الاسم القديم لحين اكتمال الدفعة
+        context.user_data['waiting_for_name'] = False
+        
+        photo_file = await update.message.photo[-1].get_file()
         file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{len(context.user_data['user_images'])}.jpg")
         await photo_file.download_to_drive(file_path)
         context.user_data['user_images'].append(file_path)
         
-        # --- السحر هنا لحل مشكلة تكرار الرسائل ---
-        # إذا كان هناك مؤقت يعمل (بسبب صورة سابقة في نفس الألبوم)، قم بإلغائه
+        # تجميع الصور (Debounce)
         current_jobs = context.job_queue.get_jobs_by_name(f"menu_{user_id}")
         for job in current_jobs:
             job.schedule_removal()
             
-        # إنشاء مؤقت جديد ينتظر ثانية واحدة (1.0 ثانية) بعد آخر صورة مستلمة
         context.job_queue.run_once(
-            send_single_menu, 
+            ask_for_filename, 
             when=1.0, 
             user_id=user_id, 
             chat_id=chat_id, 
@@ -92,6 +93,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error handling photo: {str(e)}")
+
+# دالة استقبال النصوص (اسم الملف)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    
+    # التأكد مما إذا كان البوت ينتظر اسماً للملف من هذا المستخدم ومعه صور بالفعل
+    if context.user_data.get('waiting_for_name') and context.user_data.get('user_images'):
+        raw_name = update.message.text
+        filename = clean_filename(raw_name)
+        
+        if not filename:
+            await update.message.reply_text("⚠️ الاسم الذي أدخلته غير صالح أو يحتوي على رموز ممنوعة فقط، يرجى كتابة اسم آخر:")
+            return
+            
+        # حفظ الاسم وتغيير الحالة
+        context.user_data['custom_filename'] = filename
+        context.user_data['waiting_for_name'] = False
+        
+        # إظهار قائمة الخيارات الآن بعد تحديد الاسم
+        keyboard = [
+            [
+                InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
+                InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
+            ],
+            [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"✅ تم اعتماد اسم الملف: **{filename}**\n"
+            f"الآن، اختر الصيغة التي تريد التحويل إليها:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    else:
+        # رسالة افتراضية إذا أرسل نصاً عشوائياً دون إرسال صور أولاً
+        await update.message.reply_text("📸 من فضلك أرسل الصور أولاً ليتم تحويلها وتسميتها.")
 
 # دالة استقبال ومعالجة المستندات (PDF إلى Word)
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,11 +158,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             if os.path.exists(pdf_path): os.remove(pdf_path)
             if os.path.exists(docx_path): os.remove(docx_path)
-            
-    elif file_name.lower().endswith('.docx'):
-        await update.message.reply_text("⚠️ ملاحظة: التحويل من Word إلى PDF يتطلب برامج مكتبية إضافية، يرجى إرسال ملفات PDF لتحويلها إلى Word أو إرسال صور.")
     else:
-        await update.message.reply_text("❌ صيغة الملف غير مدعومة. أرسل صوراً أو ملفات PDF فقط.")
+        await update.message.reply_text("❌ صيغة المستند غير مدعومة. أرسل صوراً أو ملفات PDF فقط.")
 
 # دالة التحكم في الأزرار التفاعلية
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,6 +168,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = query.from_user.id
     images = context.user_data.get('user_images', [])
+    # جلب الاسم المخصص، وإن لم يوجد نضع اسماً افتراضياً آعتماداً على الآي دي
+    custom_name = context.user_data.get('custom_filename', f"converted_{user_id}")
     
     if not images and query.data != "clear":
         await query.edit_message_text("❌ لم يتم العثور على صور محفوظة. يرجى إعادة إرسال الصور أولاً.")
@@ -140,14 +177,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "to_pdf":
         await query.edit_message_text("⏳ جاري إنشاء ملف PDF وتجميع الصور...")
-        pdf_path = os.path.join(DOWNLOAD_DIR, f"converted_{user_id}.pdf")
+        pdf_path = os.path.join(DOWNLOAD_DIR, f"{custom_name}.pdf")
         
         try:
             img_list = [Image.open(img).convert('RGB') for img in images if os.path.exists(img)]
             if img_list:
                 img_list[0].save(pdf_path, save_all=True, append_images=img_list[1:])
                 with open(pdf_path, 'rb') as f:
-                    await query.message.reply_document(document=f, filename="📸_Images.pdf")
+                    await query.message.reply_document(document=f, filename=f"{custom_name}.pdf")
             else:
                 await query.message.reply_text("❌ حدث خطأ، لم نجد الصور على السيرفر.")
         except Exception as e:
@@ -158,7 +195,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "to_docx":
         await query.edit_message_text("⏳ جاري إنشاء ملف Word وتنسيق الصور...")
-        docx_path = os.path.join(DOWNLOAD_DIR, f"converted_{user_id}.docx")
+        docx_path = os.path.join(DOWNLOAD_DIR, f"{custom_name}.docx")
         
         try:
             doc = Document()
@@ -176,34 +213,36 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             doc.save(docx_path)
             
             with open(docx_path, 'rb') as f:
-                await query.message.reply_document(document=f, filename="📝_Images.docx")
+                await query.message.reply_document(document=f, filename=f"{custom_name}.docx")
         except Exception as e:
             logger.error(f"Error creating DOCX: {str(e)}")
-            await query.message.reply_text(f"❌ فشل إنشاء ملف Word: {str(e)}")
+            await update.message.reply_text(f"❌ فشل إنشاء ملف Word: {str(e)}")
         finally:
             clean_user_data(context, images, docx_path)
         
     elif query.data == "clear":
         for img in images:
             if os.path.exists(img): os.remove(img)
-        context.user_data['user_images'] = []
-        await query.edit_message_text("🗑 تم مسح جميع الصور المحفوظة بنجاح. يمكنك إرسال صور جديدة الآن.")
+        context.user_data.clear()
+        await query.edit_message_text("🗑 تم مسح جميع الصور المحفوظة والاسم بنجاح. يمكنك البدء من جديد.")
 
 def clean_user_data(context, images, result_file):
     for img in images:
         if os.path.exists(img): os.remove(img)
     if os.path.exists(result_file): os.remove(result_file)
-    context.user_data['user_images'] = []
+    context.user_data.clear()
 
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # إضافة مفسر للنصوص من أجل استقبال اسم الملف من المستخدم
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(button_click))
     
-    print("🤖 يتم الآن تهيئة البوت وتفعيل نظام الجدولة الذكي لوقف تكرار الرسائل...")
+    print("🤖 تم تفعيل ميزة التسمية المخصصة الذكية بنجاح...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
