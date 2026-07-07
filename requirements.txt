@@ -1,2 +1,5 @@
 python-telegram-bot==20.8
-yt-dlp
+python-docx
+pdf2docx
+docx2pdf
+Pillow
