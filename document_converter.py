@@ -12,8 +12,9 @@ from docx.enum.shape import WD_INLINE_SHAPE_TYPE
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=4)
 
-# مسار خط عربي مدمج احتياطي (إذا أردت دمج Amiri.ttf مستقبلاً لزيادة جمال الخط)
-FONT_PATH = "Amiri.ttf"
+# حل المشكلة الأولى: جعل مسار الخط مطلقاً بالنسبة لمجلد هذا الملف البرمجي نفسه
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_PATH = os.path.join(BASE_DIR, "Amiri.ttf")
 
 def _execute_pdf_to_docx(pdf_path, docx_path):
     """تحويل PDF إلى Word بدقة عالية وبدون حظر البوت"""
@@ -31,85 +32,112 @@ async def convert_pdf_to_docx(pdf_path, docx_path):
     return await loop.run_in_executor(executor, _execute_pdf_to_docx, pdf_path, docx_path)
 
 
-def _execute_docx_to_pdf(docx_path, pdf_path):
+def clean_and_reshape_arabic(text):
     """
-    معمارية تحويل داخلية مستقلة تماماً (Pure Python)
-    تعتمد على مكتبة fpdf2 أو PyMuPDF لحقن النصوص بأسلوب الكتل والـ Core-Graphics
-    لتعمل على Railway مباشرة دون الحاجة لـ 'soffice' أو LibreOffice.
+    حل المشكلة الثالثة: التشكيل السياقي وعكس الاتجاه (RTL) للحروف العربية
+    لضمان عدم ظهور النص كرموز مقلوبة أو مبعثرة
     """
     try:
-        import fitz  # PyMuPDF المدمجة
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        
+        # إعادة تشكيل الحروف لترتبط ببعضها سياقياً حسب موقعها في الكلمة
+        reshaped_text = arabic_reshaper.reshape(text)
+        # عكس اتجاه النص ليدعم القراءة الصحيحة من اليمين إلى اليسار
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
+    except ImportError:
+        # حماية تراجعية في حال عدم توفر المكتبات بعد على السيرفر
+        logger.warning("⚠️ حزم arabic_reshaper أو python-bidi غير مثبتة، سيتم إخراج النص الخام.")
+        return text
+
+
+def _execute_docx_to_pdf(docx_path, pdf_path):
+    """
+    معمارية تحويل داخلية مصححة تماماً (Fail-safe)
+    تحل مشاكل: غياب الخط، دعم العربية، وتصحيح معاملات دالة PyMuPDF
+    """
+    try:
+        import fitz  # PyMuPDF
         doc = Document(docx_path)
         pdf_doc = fitz.open()
         
-        # مصفوفة لتجميع العناصر بترتيب ذكي
         story = []
         
-        # 1. قراءة النصوص مع الحفاظ على الأسطر والعناوين
+        # 1. قراءة النصوص والفقرات ومعالجتها عربياً فوراً
         for p in doc.paragraphs:
             text = p.text.strip()
             if text:
-                # معالجة النصوص العربية وعكس الاتجاه برمجياً لتظهر صحيحة
-                # إذا كانت الكلمات عربية نقوم بتنظيم تدفقها
-                story.append(('paragraph', text))
+                processed_text = clean_and_reshape_arabic(text)
+                story.append(('paragraph', processed_text))
                 
-        # 2. قراءة الجداول وتحويلها لبنية نصية منسقة بصرياً
+        # 2. قراءة الجداول ومعالجة نصوصها
         for table in doc.tables:
             for row in table.rows:
-                cells_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                cells_text = [clean_and_reshape_arabic(cell.text.strip()) for cell in row.cells if cell.text.strip()]
                 if cells_text:
                     grid_line = " | ".join(cells_text)
                     story.append(('table_row', grid_line))
 
-        # 3. قراءة وإحصاء أشكال الصور لمنع ظهور الملف كصفحة رمادية فارغة
+        # 3. معالجة الصور والأشكال المضمنة
         for inline_shape in doc.inline_shapes:
             if inline_shape.type in [WD_INLINE_SHAPE_TYPE.PICTURE, WD_INLINE_SHAPE_TYPE.LINKED_PICTURE]:
-                story.append(('image_placeholder', "[🖼️ صورة أو رسمة مضمنة في المستند الأصلي]"))
+                img_msg = clean_and_reshape_arabic("[🖼️ صورة أو رسمة مضمنة في المستند الأصلي]")
+                story.append(('image_placeholder', img_msg))
 
         if not story:
-            story.append(('paragraph', "[مستند فارغ أو يحتوي على عناصر غير مدعومة]"))
+            story.append(('paragraph', clean_and_reshape_arabic("[مستند فارغ من النصوص]")))
 
-        # إعدادات بناء الصفحة
+        # التحقق من وجود الخط العربي المرفق بالمسار المطلق الصحيح
+        has_font = os.path.exists(FONT_PATH)
+        if not has_font:
+            logger.critical(f"❌ خطأ فادح: ملف الخط العربي غير موجود في المسار المحدد: {FONT_PATH}")
+
         page_content = ""
         lines_on_page = 0
         max_lines_per_page = 22
         
-        # التحقق من وجود الخط العربي المرفق لتفادي المربعات أو الفراغات
-        has_font = os.path.exists(FONT_PATH)
-
         for element_type, content in story:
             if element_type == 'paragraph':
-                page_content += f"{content}\n\n"
+                page_content += f"{content}
+
+"
             elif element_type == 'table_row':
-                page_content += f"📊 {content}\n\n"
+                page_content += f"📊 {content}
+
+"
             elif element_type == 'image_placeholder':
-                page_content += f"{content}\n\n"
+                page_content += f"{content}
+
+"
                 
-            # حساب تقديري لعدد الأسطر المستهلكة لقطع الصفحة عند الامتلاء
             lines_on_page += (len(content) // 55) + 2
             
             if lines_on_page >= max_lines_per_page:
-                page = pdf_doc.new_page(width=595, height=842) # حجم ورقة A4
+                page = pdf_doc.new_page(width=595, height=842) # حجم A4
+                
                 if has_font:
+                    # حقن الخط برمجياً بالهيكل الإنشائي للصفحة
                     page.insert_font(fontname="ArabicFont", fontfile=FONT_PATH)
-                    page.insert_text((50, 50), page_text=page_content, fontsize=12, fontname="ArabicFont")
+                    # تصحيح المشكلة الثانية والخطأ البرمجي: المعامل الصحيح هو text وليس page_text
+                    page.insert_text((50, 50), text=page_content, fontsize=12, fontname="ArabicFont")
                 else:
-                    # استخدام خط نظام محايد يدعم اللغات المتعددة افتراضياً
-                    page.insert_text((50, 50), page_content, fontsize=11, fontname="helv")
+                    # تراجع آمن (Fall-back) بخط النظام الافتراضي في حال فقدان الملف تماماً
+                    page.insert_text((50, 50), text=page_content, fontsize=11, fontname="helv")
                 
                 page_content = ""
                 lines_on_page = 0
 
-        # طباعة ما تبقى من نصوص في الصفحة الأخيرة
+        # إنشاء الصفحة الأخيرة للمستند
         if page_content or len(pdf_doc) == 0:
             page = pdf_doc.new_page(width=595, height=842)
             if has_font:
                 page.insert_font(fontname="ArabicFont", fontfile=FONT_PATH)
-                page.insert_text((50, 50), page_text=page_content if page_content else "التحويل مكتمل", fontsize=12, fontname="ArabicFont")
+                page.insert_text((50, 50), text=page_content if page_content else clean_and_reshape_arabic("تم التحويل مكتمل"), fontsize=12, fontname="ArabicFont")
             else:
-                page.insert_text((50, 50), page_content if page_content else "Done", fontsize=11, fontname="helv")
+                page.insert_text((50, 50), text=page_content if page_content else "Done", fontsize=11, fontname="helv")
 
-        # حفظ وإغلاق تيار البيانات
+        # حفظ وإغلاق التدفق
         pdf_doc.save(pdf_path)
         pdf_doc.close()
         return True
