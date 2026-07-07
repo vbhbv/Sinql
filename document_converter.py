@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pdf2docx import Converter
 from docx import Document
 from docx.shared import Inches
+from docx.enum.shape import WD_INLINE_SHAPE_TYPE
 
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=4)
@@ -37,36 +38,36 @@ async def convert_pdf_to_docx(pdf_path, docx_path):
 
 def _execute_docx_to_pdf(docx_path, pdf_path):
     """
-    النسخة الاحترافية لتحويل Word إلى PDF
-    تتعامل مع الصور، الفقرات، والجداول دون فقدان التنسيق أو التسبب في انهيار
+    نسخة احترافية مصححة لتحويل Word إلى PDF
+    تتعامل مع الصور، الفقرات، والجداول لتجنب الانهيار (Crash)
     """
     try:
         import fitz  # PyMuPDF
         doc = Document(docx_path)
         pdf_doc = fitz.open()
         
-        # استخراج كافة الفقرات والعناصر
         elements = []
+        
+        # 1. استخراج كافة الفقرات والعناوين النصية
         for p in doc.paragraphs:
             if p.text.strip():
                 elements.append(('text', p.text))
                 
-        # استخراج الجداول إن وجدت
+        # 2. استخراج الجداول المكتوبة إن وجدت
         for table in doc.tables:
             for row in table.rows:
                 row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
                 if row_text:
                     elements.append(('table', row_text))
                     
-        # استخراج الصور المضمنة داخل ملف الوورد لضمان عدم ظهور الملف فارغاً كما في الصورة
-        # (حيث أن أغلب ملفات الكتب تكون صوراً ممسوحة ضوئياً)
+        # 3. التصحيح الآمن: استخراج الصور بناءً على نوع الـ InlineShape الصحيح
         for inline_shape in doc.inline_shapes:
-            if inline_shape.has_picture:
-                # محاولة استخراج الصورة برمجياً كعنصر رسومي
-                elements.append(('image', "[صورة مضمنة في المستند]"))
+            if inline_shape.type == WD_INLINE_SHAPE_TYPE.PICTURE or inline_shape.type == WD_INLINE_SHAPE_TYPE.LINKED_PICTURE:
+                elements.append(('image', "[تحتوي هذه الصفحة على صورة أو مخطوطة مضمنة]"))
 
+        # حالة أمان لمنع إنشاء ملف فارغ تماماً
         if not elements:
-            elements.append(('text', "[مستند فارغ أو غير مدعم بالتنسيق النصي]"))
+            elements.append(('text', "[مستند نصي فارغ أو غير مدعوم بالتنسيق الحالي]"))
 
         page_text = ""
         line_count = 0
@@ -79,23 +80,26 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
             else:
                 page_text += "🖼 " + text + "\n\n"
                 
+            # حساب تقريبي للمساحة المستهلكة في الأسطر
             line_count += (len(text) // 50) + 2
             
+            # الانتقال لصفحة جديدة عند امتلاء الأسطر
             if line_count >= 24:
                 page = pdf_doc.new_page(width=595, height=842)
                 page.insert_text((50, 50), page_text, fontsize=11, fontname="helv")
                 page_text = ""
                 line_count = 0
                 
+        # كتابة النصوص المتبقية في الصفحة الأخيرة
         if page_text or len(pdf_doc) == 0:
             page = pdf_doc.new_page(width=595, height=842)
-            page.insert_text((50, 50), page_text if page_text else "تحويل مكتمل", fontsize=11, fontname="helv")
+            page.insert_text((50, 50), page_text if page_text else "التحويل مكتمل بنجاح", fontsize=11, fontname="helv")
             
         pdf_doc.save(pdf_path)
         pdf_doc.close()
         return True
     except Exception as e:
-        logger.error(f"خطأ أثناء تحويل Word إلى PDF: {str(e)}")
+        logger.error(f"خطأ قاتل أثناء تحويل Word إلى PDF: {str(e)}")
         return False
 
 async def convert_docx_to_pdf(docx_path, pdf_path):
