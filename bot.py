@@ -28,8 +28,37 @@ def تنظيف_المجلد_المؤقت():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 أهلاً بك في بوت تحويل الملفات المتكامل!\n\n"
-        "📸 **لتحويل الصور إلى ملف:** أرسل لي صورة (أو عدة صور تلو الأخرى).\n"
+        "📸 **لتحويل الصور إلى ملف:** أرسل لي صورة (أو عدة صور دفعة واحدة).\n"
         "📄 **لتحويل المستندات:** أرسل لي ملف PDF لتحويله مباشرة إلى Word."
+    )
+
+# دالة تُستدعى بعد توقف إرسال الصور بـ ثانية واحدة لإرسال رسالة واحدة للمستخدم
+async def send_single_menu(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    user_id = job.user_id
+    chat_id = job.chat_id
+    
+    # جلب مسارات الصور المخزنة لهذا المستخدم
+    user_data = context.application.user_data.get(user_id, {})
+    images_count = len(user_data.get('user_images', []))
+    
+    if images_count == 0:
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
+            InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
+        ],
+        [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📥 تم استلام وحفظ جميع الصور بنجاح! إجمالي الصور الحالية: ({images_count}).\n"
+             f"الرجاء اختيار الصيغة التي تريد تحويل الصور إليها مجتمعة:",
+        reply_markup=reply_markup
     )
 
 # دالة استقبال ومعالجة الصور
@@ -37,6 +66,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         photo_file = await update.message.photo[-1].get_file()
         user_id = update.message.from_user.id
+        chat_id = update.message.chat_id
         
         if 'user_images' not in context.user_data:
             context.user_data['user_images'] = []
@@ -45,20 +75,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await photo_file.download_to_drive(file_path)
         context.user_data['user_images'].append(file_path)
         
-        keyboard = [
-            [
-                InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
-                InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
-            ],
-            [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"📥 تم استلام وحفظ الصورة رقم ({len(context.user_data['user_images'])}).\n"
-            "الرجاء اختيار الصيغة التي تريد تحويل الصور إليها:",
-            reply_markup=reply_markup
+        # --- السحر هنا لحل مشكلة تكرار الرسائل ---
+        # إذا كان هناك مؤقت يعمل (بسبب صورة سابقة في نفس الألبوم)، قم بإلغائه
+        current_jobs = context.job_queue.get_jobs_by_name(f"menu_{user_id}")
+        for job in current_jobs:
+            job.schedule_removal()
+            
+        # إنشاء مؤقت جديد ينتظر ثانية واحدة (1.0 ثانية) بعد آخر صورة مستلمة
+        context.job_queue.run_once(
+            send_single_menu, 
+            when=1.0, 
+            user_id=user_id, 
+            chat_id=chat_id, 
+            name=f"menu_{user_id}"
         )
+        
     except Exception as e:
         logger.error(f"Error handling photo: {str(e)}")
 
@@ -131,8 +162,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             doc = Document()
-            
-            # ضبط حواف الصفحة الافتراضية لملف الوورد (Margins) لتكون مناسبة
             sections = doc.sections
             for section in sections:
                 section.top_margin = Inches(0.5)
@@ -142,8 +171,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for img_path in images:
                 if os.path.exists(img_path):
-                    # إجبار الصورة على اتخاذ عرض ثابت ومناسب داخل صفحة الوورد (6.5 إنش)
-                    # هذا يمنع تمدد الصورة خارج حدود الصفحة ويجعلها منسقة بالكامل
                     doc.add_picture(img_path, width=Inches(6.5))
                     
             doc.save(docx_path)
@@ -176,7 +203,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(button_click))
     
-    print("🤖 يتم الآن تهيئة البوت وطرد الجلسات المتضاربة...")
+    print("🤖 يتم الآن تهيئة البوت وتفعيل نظام الجدولة الذكي لوقف تكرار الرسائل...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
