@@ -1,19 +1,28 @@
 import os
 import logging
+import shutil
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from PIL import Image
 from docx import Document
 from pdf2docx import Converter
 
-# إعداد السجلات (Logging) لمعرفة حالة البوت والأخطاء إن وجدت
+# إعداد السجلات (Logging) لمعرفة الأخطاء بالتفصيل في لوحة تحكم ريلواي
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from config import TOKEN
 
-# مجلد مؤقت لحفظ الصور والملفات المرفوعة والمحولة
+# مجلد مؤقت لحفظ الصور والملفات
 DOWNLOAD_DIR = "temp_files"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# دالة لتنظيف المجلد المؤقت بالكامل عند تشغيل البوت لتفريغ أي مخلفات سابقة
+def للمرة_الأولى_تنظيف():
+    if os.path.exists(DOWNLOAD_DIR):
+        shutil.rmtree(DOWNLOAD_DIR)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+للمرة_الأولى_تنظيف()
 
 # دالة الترحيب /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -25,32 +34,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # دالة استقبال ومعالجة الصور
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo_file = await update.message.photo[-1].get_file()
-    user_id = update.message.from_user.id
-    
-    if 'user_images' not in context.user_data:
-        context.user_data['user_images'] = []
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        user_id = update.message.from_user.id
         
-    # تحديد مسار فريد للصورة المستلمة
-    file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{len(context.user_data['user_images'])}.jpg")
-    await photo_file.download_to_drive(file_path)
-    context.user_data['user_images'].append(file_path)
-    
-    # بناء أزرار الخيارات التفاعلية للمستخدم
-    keyboard = [
-        [
-            InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
-            InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
-        ],
-        [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"📥 تم استلام وحفظ الصورة رقم ({len(context.user_data['user_images'])}).\n"
-        "الرجاء اختيار الصيغة التي تريد تحويل الصور إليها:",
-        reply_markup=reply_markup
-    )
+        if 'user_images' not in context.user_data:
+            context.user_data['user_images'] = []
+            
+        file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{len(context.user_data['user_images'])}.jpg")
+        await photo_file.download_to_drive(file_path)
+        context.user_data['user_images'].append(file_path)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📄 تحويل إلى PDF", callback_data="to_pdf"),
+                InlineKeyboardButton("📝 تحويل إلى Word (Docx)", callback_data="to_docx")
+            ],
+            [InlineKeyboardButton("❌ مسح الصور والبدء من جديد", callback_data="clear")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"📥 تم استلام وحفظ الصورة رقم ({len(context.user_data['user_images'])}).\n"
+            "الرجاء اختيار الصيغة التي تريد تحويل الصور إليها:",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Error handling photo: {str(e)}")
 
 # دالة استقبال ومعالجة المستندات (PDF إلى Word)
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,31 +72,30 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf_path = os.path.join(DOWNLOAD_DIR, f"{update.message.from_user.id}_{file_name}")
         docx_path = pdf_path.replace('.pdf', '.docx')
         
-        file = await doc.get_file()
-        await file.download_to_drive(pdf_path)
-        
         try:
-            # بدء عملية التحويل البرمجية
+            file = await doc.get_file()
+            await file.download_to_drive(pdf_path)
+            
             cv = Converter(pdf_path)
             cv.convert(docx_path, start=0, end=None)
             cv.close()
             
-            # إرسال ملف الـ Word الناتج للمستخدم
-            await update.message.reply_document(document=open(docx_path, 'rb'), filename=os.path.basename(docx_path))
+            with open(docx_path, 'rb') as f:
+                await update.message.reply_document(document=f, filename=os.path.basename(docx_path))
             await wait_msg.delete()
         except Exception as e:
+            logger.error(f"Error converting PDF: {str(e)}")
             await update.message.reply_text(f"❌ عذراً، حدث خطأ أثناء تحويل ملف PDF: {str(e)}")
         finally:
-            # مسح الملفات المؤقتة من الخادم فوراً لحفظ المساحة
             if os.path.exists(pdf_path): os.remove(pdf_path)
             if os.path.exists(docx_path): os.remove(docx_path)
             
     elif file_name.lower().endswith('.docx'):
-        await update.message.reply_text("⚠️ ملاحظة: التحويل من Word إلى PDF يتطلب برامج مكتبية (مثل LibreOffice) على السيرفر، يرجى إرسال ملفات PDF لتحويلها إلى Word أو إرسال صور.")
+        await update.message.reply_text("⚠️ ملاحظة: التحويل من Word إلى PDF يتطلب برامج مكتبية إضافية، يرجى إرسال ملفات PDF لتحويلها إلى Word أو إرسال صور.")
     else:
         await update.message.reply_text("❌ صيغة الملف غير مدعومة. أرسل صوراً أو ملفات PDF فقط.")
 
-# دالة التحكم في الأزرار التفاعلية (Callback Query)
+# دالة التحكم في الأزرار التفاعلية
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -102,25 +111,38 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ جاري إنشاء ملف PDF وتجميع الصور...")
         pdf_path = os.path.join(DOWNLOAD_DIR, f"converted_{user_id}.pdf")
         
-        # فتح الصور وتحويلها لصيغة متوافقة ثم حفظها كـ PDF واحد
-        img_list = [Image.open(img).convert('RGB') for img in images]
-        img_list[0].save(pdf_path, save_all=True, append_images=img_list[1:])
-        
-        await query.message.reply_document(document=open(pdf_path, 'rb'), filename="📸_Images.pdf")
-        clean_user_data(context, images, pdf_path)
+        try:
+            img_list = [Image.open(img).convert('RGB') for img in images if os.path.exists(img)]
+            if img_list:
+                img_list[0].save(pdf_path, save_all=True, append_images=img_list[1:])
+                with open(pdf_path, 'rb') as f:
+                    await query.message.reply_document(document=f, filename="📸_Images.pdf")
+            else:
+                await query.message.reply_text("❌ حدث خطأ، لم نجد الصور على السيرفر.")
+        except Exception as e:
+            logger.error(f"Error creating PDF: {str(e)}")
+            await query.message.reply_text(f"❌ فشل إنشاء ملف PDF: {str(e)}")
+        finally:
+            clean_user_data(context, images, pdf_path)
 
     elif query.data == "to_docx":
         await query.edit_message_text("⏳ جاري إنشاء ملف Word وإدراج الصور...")
         docx_path = os.path.join(DOWNLOAD_DIR, f"converted_{user_id}.docx")
         
-        # إنشاء مستند Word وإضافة الصور داخله بشكل متتالي
-        doc = Document()
-        for img in images:
-            doc.add_picture(img)
-        doc.save(docx_path)
-        
-        await query.message.reply_document(document=open(docx_path, 'rb'), filename="📝_Images.docx")
-        clean_user_data(context, images, docx_path)
+        try:
+            doc = Document()
+            for img in images:
+                if os.path.exists(img):
+                    doc.add_picture(img)
+            doc.save(docx_path)
+            
+            with open(docx_path, 'rb') as f:
+                await query.message.reply_document(document=f, filename="📝_Images.docx")
+        except Exception as e:
+            logger.error(f"Error creating DOCX: {str(e)}")
+            await query.message.reply_text(f"❌ فشل إنشاء ملف Word: {str(e)}")
+        finally:
+            clean_user_data(context, images, docx_path)
         
     elif query.data == "clear":
         for img in images:
@@ -128,14 +150,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['user_images'] = []
         await query.edit_message_text("🗑 تم مسح جميع الصور المحفوظة بنجاح. يمكنك إرسال صور جديدة الآن.")
 
-# دالة تنظيف ومسح مخلفات الصور بعد إرسال الملف النهائي
+# دالة التنظيف الفوري للملفات والصور المستهلكة
 def clean_user_data(context, images, result_file):
     for img in images:
         if os.path.exists(img): os.remove(img)
     if os.path.exists(result_file): os.remove(result_file)
     context.user_data['user_images'] = []
 
-# تشغيل البوت وربطه
 def main():
     app = Application.builder().token(TOKEN).build()
     
@@ -149,4 +170,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    
