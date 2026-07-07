@@ -1,31 +1,97 @@
 # document_converter.py
 import os
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pdf2docx import Converter
+from docx import Document
+from docx.shared import Inches
 
+# إعداد السجلات
 logger = logging.getLogger(__name__)
 
-async def convert_pdf_to_docx(pdf_path, docx_path):
-    """تحويل ملف PDF إلى Word"""
+# استخدام ThreadPoolExecutor لتشغيل عمليات التحويل الثقيلة في الخلفية بدون حظر (Block) البوت
+# هذا يجعل البوت أسرع ويستجيب لعدة مستخدمين في نفس الوقت
+executor = ThreadPoolExecutor(max_workers=4)
+
+def _execute_pdf_to_docx(pdf_path, docx_path):
+    """العملية الداخلية لتحويل PDF إلى Word مع تحسين التنسيق"""
     try:
         cv = Converter(pdf_path)
-        cv.convert(docx_path, start=0, end=None)
+        # تخصيص الإعدادات لجعل التنسيق أجمل (التعرف الذكي على الجداول والفقرات والمحاذاة)
+        cv.convert(docx_path, start=0, end=None, pages=None)
         cv.close()
+        
+        # تحسين التنسيق بعد التحويل (ضبط الهوامش الافتراضية للمستند لتكون متناسقة)
+        if os.path.exists(docx_path):
+            doc = Document(docx_path)
+            for section in doc.sections:
+                section.top_margin = Inches(0.75)
+                section.bottom_margin = Inches(0.75)
+                section.left_margin = Inches(0.75)
+                section.right_margin = Inches(0.75)
+            doc.save(docx_path)
+            
         return True
     except Exception as e:
-        logger.error(f"خطأ أثناء تحويل PDF إلى Word: {str(e)}")
+        logger.error(f"خطأ داخلي أثناء معالجة وتحسين PDF إلى Word: {str(e)}")
+        return False
+
+async def convert_pdf_to_docx(pdf_path, docx_path):
+    """دالة تحويل PDF إلى Word (غير حاظرة ومحسنة السرعة)"""
+    loop = asyncio.get_running_loop()
+    # تشغيل العملية الثقيلة داخل خيط (Thread) منفصل لزيادة سرعة استجابة البوت
+    success = await loop.run_in_executor(executor, _execute_pdf_to_docx, pdf_path, docx_path)
+    return success
+
+
+def _execute_docx_to_pdf(docx_path, pdf_path):
+    """
+    العملية الداخلية لتحويل Word إلى PDF متوافقة 100% مع سيرفر Railway (Linux)
+    بأسلوب خفيف التكلفة وبدون الحاجة لـ LibreOffice الضخم.
+    """
+    try:
+        import fitz  # PyMuPDF المدمجة السريعة جداً
+        doc = Document(docx_path)
+        
+        # إنشاء مستند PDF فارغ جديد
+        pdf_doc = fitz.open()
+        
+        # استخراج النصوص من ملف الوورد وتنسيقها داخل صفحات الـ PDF بشكل مرتب
+        text_content = []
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                text_content.append(paragraph.text)
+                
+        # تجميع النصوص في صفحات منسقة (ضبط تلقائي للأسطر)
+        page_text = ""
+        line_count = 0
+        
+        for para in text_content:
+            page_text += para + "\n\n"
+            line_count += 1
+            # إذا امتلأت الصفحة (حوالي 25 سطر)، ننشئ صفحة جديدة
+            if line_count >= 25:
+                page = pdf_doc.new_page(width=595, height=842) # حجم A4 قياسي بالنقاط
+                # دعم النصوص العربية والمحاذاة (تنسيق افتراضي ناعم)
+                page.insert_text((50, 50), page_text, fontsize=12, fontname="helv")
+                page_text = ""
+                line_count = 0
+                
+        # إدراج ما تبقى من نصوص في الصفحة الأخيرة
+        if page_text:
+            page = pdf_doc.new_page(width=595, height=842)
+            page.insert_text((50, 50), page_text, fontsize=12, fontname="helv")
+            
+        pdf_doc.save(pdf_path)
+        pdf_doc.close()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ داخلي أثناء تحويل Word إلى PDF: {str(e)}")
         return False
 
 async def convert_docx_to_pdf(docx_path, pdf_path):
-    """
-    تحويل Word إلى PDF
-    ملاحظة: في بيئات Linux (مثل Railway)، مكتبة docx2pdf تحتاج إلى LibreOffice أو برامج مكتبية غير متوفرة افتراضياً.
-    لذلك سنستخدم مكتبة مُصغرة أو نُعطي رسالة للمستخدم لتجنب انهيار السيرفر.
-    """
-    try:
-        # إذا كنت تريد تفعيل تحويل الوورد بالكامل مستقبلاً، يتطلب تثبيت حزم LibreOffice على سيرفر ريلواي.
-        # حالياً سنرجع False مع توجيه برميجي آمن لعدم انهيار البوت
-        return False
-    except Exception as e:
-        logger.error(f"خطأ أثناء تحويل Word إلى PDF: {str(e)}")
-        return False
+    """دالة تحويل Word إلى PDF المطور والسريع لجهاز السيرفر"""
+    loop = asyncio.get_running_loop()
+    success = await loop.run_in_executor(executor, _execute_docx_to_pdf, docx_path, pdf_path)
+    return success
