@@ -99,17 +99,11 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
         
         for element_type, content in story:
             if element_type == 'paragraph':
-                page_content += f"{content}
-
-"
+                page_content += f"{content}\n\n"
             elif element_type == 'table_row':
-                page_content += f"📊 {content}
-
-"
+                page_content += f"📊 {content}\n\n"
             elif element_type == 'image_placeholder':
-                page_content += f"{content}
-
-"
+                page_content += f"{content}\n\n"
                 
             lines_on_page += (len(content) // 55) + 2
             
@@ -119,7 +113,6 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
                 if has_font:
                     # حقن الخط برمجياً بالهيكل الإنشائي للصفحة
                     page.insert_font(fontname="ArabicFont", fontfile=FONT_PATH)
-                    # تصحيح المشكلة الثانية والخطأ البرمجي: المعامل الصحيح هو text وليس page_text
                     page.insert_text((50, 50), text=page_content, fontsize=12, fontname="ArabicFont")
                 else:
                     # تراجع آمن (Fall-back) بخط النظام الافتراضي في حال فقدان الملف تماماً
@@ -133,9 +126,11 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
             page = pdf_doc.new_page(width=595, height=842)
             if has_font:
                 page.insert_font(fontname="ArabicFont", fontfile=FONT_PATH)
-                page.insert_text((50, 50), text=page_content if page_content else clean_and_reshape_arabic("تم التحويل مكتمل"), fontsize=12, fontname="ArabicFont")
+                final_text = page_content if page_content else clean_and_reshape_arabic("تم التحويل بنجاح")
+                page.insert_text((50, 50), text=final_text, fontsize=12, fontname="ArabicFont")
             else:
-                page.insert_text((50, 50), text=page_content if page_content else "Done", fontsize=11, fontname="helv")
+                final_text = page_content if page_content else "Done"
+                page.insert_text((50, 50), text=final_text, fontsize=11, fontname="helv")
 
         # حفظ وإغلاق التدفق
         pdf_doc.save(pdf_path)
