@@ -11,6 +11,9 @@ from docx.enum.shape import WD_INLINE_SHAPE_TYPE
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=4)
 
+# مسار الخط العربي المدمج بالمشروع لحل مشكلة الصفحات البيضاء
+FONT_PATH = "Amiri.ttf" 
+
 def _execute_pdf_to_docx(pdf_path, docx_path):
     """تحويل PDF إلى Word مع ضبط الهوامش القياسية"""
     try:
@@ -38,8 +41,8 @@ async def convert_pdf_to_docx(pdf_path, docx_path):
 
 def _execute_docx_to_pdf(docx_path, pdf_path):
     """
-    نسخة احترافية مصححة لتحويل Word إلى PDF
-    تتعامل مع الصور، الفقرات، والجداول لتجنب الانهيار (Crash)
+    معمارية تحويل ذكية ومستقرة (تمنع الصفحات البيضاء)
+    تعتمد على حقن خط عربي داخل ملف الـ PDF لضمان ظهور النصوص المرسومة
     """
     try:
         import fitz  # PyMuPDF
@@ -48,26 +51,30 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
         
         elements = []
         
-        # 1. استخراج كافة الفقرات والعناوين النصية
+        # 1. استخراج النصوص والفقرات
         for p in doc.paragraphs:
             if p.text.strip():
                 elements.append(('text', p.text))
                 
-        # 2. استخراج الجداول المكتوبة إن وجدت
+        # 2. استخراج نصوص الجداول
         for table in doc.tables:
             for row in table.rows:
                 row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
                 if row_text:
                     elements.append(('table', row_text))
                     
-        # 3. التصحيح الآمن: استخراج الصور بناءً على نوع الـ InlineShape الصحيح
+        # 3. فحص الأشكال والصور
         for inline_shape in doc.inline_shapes:
-            if inline_shape.type == WD_INLINE_SHAPE_TYPE.PICTURE or inline_shape.type == WD_INLINE_SHAPE_TYPE.LINKED_PICTURE:
-                elements.append(('image', "[تحتوي هذه الصفحة على صورة أو مخطوطة مضمنة]"))
+            if inline_shape.type in [WD_INLINE_SHAPE_TYPE.PICTURE, WD_INLINE_SHAPE_TYPE.LINKED_PICTURE]:
+                elements.append(('image', "[مستند يحتوي على صورة أو مخطط]"))
 
-        # حالة أمان لمنع إنشاء ملف فارغ تماماً
         if not elements:
-            elements.append(('text', "[مستند نصي فارغ أو غير مدعوم بالتنسيق الحالي]"))
+            elements.append(('text', "[مستند فارغ من النصوص]"))
+
+        # التحقق من وجود ملف الخط المدمج
+        has_custom_font = os.path.exists(FONT_PATH)
+        if not has_custom_font:
+            logger.warning(f"⚠️ ملف الخط '{FONT_PATH}' غير موجود في المجلد الرئيسي. سيتم استخدام خط النظام الافتراضي وقد تظهر صفحات بيضاء للنصوص العربية.")
 
         page_text = ""
         line_count = 0
@@ -80,26 +87,37 @@ def _execute_docx_to_pdf(docx_path, pdf_path):
             else:
                 page_text += "🖼 " + text + "\n\n"
                 
-            # حساب تقريبي للمساحة المستهلكة في الأسطر
+            # حساب الأسطر التقريبية لتفادي تجاوز أبعاد الصفحة
             line_count += (len(text) // 50) + 2
             
-            # الانتقال لصفحة جديدة عند امتلاء الأسطر
-            if line_count >= 24:
-                page = pdf_doc.new_page(width=595, height=842)
-                page.insert_text((50, 50), page_text, fontsize=11, fontname="helv")
+            if line_count >= 22:
+                page = pdf_doc.new_page(width=595, height=842) # حجم A4
+                
+                if has_custom_font:
+                    # بناء وتثبيت الخط العربي داخل صفحة الـ PDF برمجياً وحقنه في الهيكل
+                    page.insert_font(fontname="F0", fontfile=FONT_PATH)
+                    # الكتابة بالخط المحقون لضمان القراءة الصحيحة
+                    page.insert_text((50, 50), page_text, fontsize=12, fontname="F0")
+                else:
+                    page.insert_text((50, 50), page_text, fontsize=11, fontname="helv")
+                    
                 page_text = ""
                 line_count = 0
                 
-        # كتابة النصوص المتبقية في الصفحة الأخيرة
+        # كتابة الصفحة الأخيرة المتبقية
         if page_text or len(pdf_doc) == 0:
             page = pdf_doc.new_page(width=595, height=842)
-            page.insert_text((50, 50), page_text if page_text else "التحويل مكتمل بنجاح", fontsize=11, fontname="helv")
+            if has_custom_font:
+                page.insert_font(fontname="F0", fontfile=FONT_PATH)
+                page.insert_text((50, 50), page_text if page_text else "التحويل مكتمل", fontsize=12, fontname="F0")
+            else:
+                page.insert_text((50, 50), page_text if page_text else "Done", fontsize=11, fontname="helv")
             
         pdf_doc.save(pdf_path)
         pdf_doc.close()
         return True
     except Exception as e:
-        logger.error(f"خطأ قاتل أثناء تحويل Word إلى PDF: {str(e)}")
+        logger.error(f"خطأ معماري أثناء تحويل Word إلى PDF: {str(e)}")
         return False
 
 async def convert_docx_to_pdf(docx_path, pdf_path):
