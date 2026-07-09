@@ -1,5 +1,0 @@
-python-telegram-bot[job-queue]>=21.8
-python-docx
-pdf2docx
-Pillow
-pymupdf
